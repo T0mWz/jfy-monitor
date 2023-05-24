@@ -6,10 +6,15 @@ usesstore= True
 devname=/dev/term/0
 pvoutput_sysid=
 pvoutput_apikey=
+mqtt_broker=
+mqtt_port=1883
+mqtt_topic=jfymonitor
+mqtt_client=jfymonitor
+mqtt_username=
+mqtt_password=
 
 [inverter-2]
 devname=/dev/infamous
 
 [inverter-3]
 devname=/dev/outoftouch
-

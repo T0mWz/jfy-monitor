@@ -85,6 +85,9 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import requests
+
+from paho.mqtt import client as mqtt_client
 
 # This is in what appears to be the wrong spot from pylint's point
 # of view - but only because pyserial is installed in $HOME rather
@@ -243,6 +246,14 @@ class Inverter(threading.Thread):
         self.usesstore = inv["usesstore"]
         self.apikey = inv["apikey"]
         self.sysid = inv["sysid"]
+
+        self.mqtt_broker = inv["mqtt_broker"]
+        self.mqtt_port = inv["mqtt_port"]
+        self.mqtt_topic = inv["mqtt_topic"]
+        self.mqtt_client = inv["mqtt_client"]
+        self.mqtt_username = inv["mqtt_username"]
+        self.mqtt_password = inv["mqtt_password"]
+
         self.logpath = inv["logpath"]
         self.oneshot = oneshot
         starttime = datetime.datetime.now()
@@ -384,31 +395,83 @@ class Inverter(threading.Thread):
         """
         Updates the pvoutput.org service, if the current minute is
         divisible by 5 (complies with pvoutput.org rules). Refer to
-        API documentation at https://www.pvoutput.org/help.html#api-addstatus
+        API documentation at https://pvoutput.org/help/api_specification.html#add-status-service
+
+        Example data which we receive;
+          {'temperature': 307, 'powerGenerated': 772, 'voltageDC': 2496, 'current': 7, 'energyGenerated': 5003, 'voltageAC': 65535}
         """
         curtime = datetime.datetime.now()
         if curtime.minute % 5 != 0:
             return
+
         valdata = {
             'd': curtime.strftime("%Y%m%d"),                 # date
             't': curtime.strftime("%H:%M"),                  # time
-            'v1': vals["energyGenerated"] / JFYDivisors[4],  # energy
-            'v2': vals["powerGenerated"] / JFYDivisors[1],   # power
-            'v5': vals["temperature"] / JFYDivisors[0],      # temperature
-            'v6': vals["voltageDC"] / JFYDivisors[2]         # Vdc
+            'v1': vals["energyGenerated"] / 10,              # energy
+            'v2': vals["powerGenerated"],                    # power
+            'v5': vals["temperature"] / 10,                  # temperature
+            'v6': vals["voltageDC"] / 10                     # Vdc
         }
-        data = urllib.parse.urlencode(valdata)
-        data = data.encode("ascii")
-        req = urllib.request.Request(url=SERVICEURL, data=data)
-        req.add_header("X-Pvoutput-Apikey", self.apikey)
-        req.add_header("X-Pvoutput-SystemId", self.sysid)
-        try:
-            urllib.request.urlopen(req, data)
-        except urllib.error.URLError as exc:
-            print("Failed: reason {0}".format(exc.reason), file=sys.stderr)
 
-        if self.debug:
-            print("Updated pvoutput.org with valdata: {0}".format(valdata))
+        # Define request headers
+        headers = {
+            'X-Pvoutput-Apikey': self.apikey,
+            'X-Pvoutput-SystemId': self.sysid,
+            'Content-Type': 'application/x-www-form-urlencoded',
+        }
+
+        data = urllib.parse.urlencode(valdata)'
+
+        try:
+            response = requests.post('https://pvoutput.org/service/r2/addstatus.jsp', headers=headers, data=data)
+
+            if self.debug:
+                print("Updated pvoutput.org with valdata: {0}".format(valdata))
+                print('HTTP response was (%s), response: %s' %(response.status_code, response.text))
+
+        except Exception as e:
+            if self.debug:
+                print('Failed to make request . Error: ' + str(e))
+
+        return
+
+    def mqtt_update(self, stats):
+        """
+        Send output to an MQTT broker
+
+        Example data which we receive;
+          {'temperature': 307, 'powerGenerated': 772, 'voltageDC': 2496, 'current': 7, 'energyGenerated': 5003, 'voltageAC': 65535}
+        """
+
+        try:
+            def on_connect(client, userdata, flags, rc):
+                if rc == 0:
+                    print("Connected to MQTT Broker!")
+                else:
+                    print("Failed to connect, return code %d\n", rc)
+
+            client = mqtt_client.Client(self.mqtt_client)
+            if self.mqtt_username:
+                client.username_pw_set(self.mqtt_username, self.mqtt_password)
+            client.on_connect = on_connect
+            client.connect(self.mqtt_broker, self.mqtt_port)
+
+            client.loop_start()
+
+            result = client.publish(topic, stats)
+            # result: [0, 1]
+            status = result[0]
+            if status == 0:
+                print(f"Send `{stats}` to topic `{topic}`")
+            else:
+                print(f"Failed to send message to topic {topic}")
+
+            client.loop_stop()
+        except Exception as e:
+            if self.debug:
+                print('Failed to make mqtt request . Error: ' + str(e))
+
+        return
 
     def register(self):
         """ Register this utility with the inverter """
@@ -492,7 +555,7 @@ class Inverter(threading.Thread):
         print("Registration succeeded for device with "
               "serial number {0} on {1}".format(self.hr_serial, self.devname))
         print("Registration process ended at ", datetime.datetime.now(),
-              file=sys.stderr)        
+              file=sys.stderr)
         return
 
     def setup_sstore(self):
@@ -602,6 +665,9 @@ class Inverter(threading.Thread):
             if self.apikey:
                 self.pvoutput_update(stats)
 
+            if self.mqtt_broker:
+                self.mqtt_update(stats)
+
             # shutdown if required
             if not self.oneshot:
                 print("Not daemonizing")
@@ -689,6 +755,21 @@ def parse_cfg(cfgfile, logpath):
             inv["logpath"] = cfg[invsect]["logpath"]
         else:
             inv["logpath"] = logpath
+
+        inv["mqtt_broker"] = cfg[invsect]["mqtt_broker"]
+        inv["mqtt_port"] = cfg[invsect]["mqtt_port"]
+        inv["mqtt_topic"] = cfg[invsect]["mqtt_topic"]
+        # Generate a Client ID with the publish prefix.
+        inv["mqtt_client"] = cfg[invsect]["mqtt_client"]
+        if cfg.has_option(invsect, "mqtt_username"):
+            inv["mqtt_username"] = cfg[invsect]["mqtt_username"]
+        else:
+            inv["mqtt_username"] = None
+        if cfg.has_option(invsect, "mqtt_password"):
+            inv["mqtt_password"] = cfg[invsect]["mqtt_password"]
+        else:
+            inv["mqtt_password"] = None
+
         rlist.append(inv)
     return rlist
 
