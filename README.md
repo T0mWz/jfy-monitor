@@ -2,7 +2,7 @@
 This utility monitors [JFY][JFY home] SunTwins inverters, specifically
 the JFY-5000. While it is unlikely that you would have more than one of
 these attached to your system, this utility is written to enable
-multiple-instance monitoring. 
+multiple-instance monitoring.
 
 Data is stored locally, and uploaded to either or both
 [pvoutput.org][pvoutput.org] and a
@@ -28,6 +28,13 @@ utility):
     pvout_sysid= PVoutput.org system id for this inverter
     pvout_apikey= PVoutput.org api key for this inverter
     logpath= path to logfiles for this inverter, if different to the default.
+
+    mqtt_broker= Address of your MQTT broker
+    mqtt_port= Port of your MQTT broker
+    mqtt_topic= Topic on your MQTT broker
+    mqtt_client= Client ID for your MQTT broker
+    mqtt_username= Authentication to your MQTT broker
+    mqtt_password= Authentication to your MQTT broker
 
 
 There is one external dependency: [pySerial][pySerial]
